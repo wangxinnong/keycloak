@@ -24,6 +24,7 @@ import org.jboss.shrinkwrap.api.spec.WebArchive;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.keycloak.OAuth2Constants;
 import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.admin.client.resource.RealmResource;
 import org.keycloak.common.util.Base64Url;
@@ -37,11 +38,16 @@ import org.keycloak.representations.idm.IdentityProviderRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.testsuite.ActionURIUtils;
 import org.keycloak.testsuite.adapter.AbstractServletsAdapterTest;
+import org.keycloak.testsuite.admin.ApiUtil;
 import org.keycloak.testsuite.arquillian.AuthServerTestEnricher;
 import org.keycloak.testsuite.broker.BrokerTestTools;
 import org.keycloak.testsuite.page.AbstractPageWithInjectedUrl;
+import org.keycloak.testsuite.pages.AccountUpdateProfilePage;
+import org.keycloak.testsuite.pages.ErrorPage;
 import org.keycloak.testsuite.pages.LoginPage;
+import org.keycloak.testsuite.pages.LoginUpdateProfilePage;
 import org.keycloak.testsuite.pages.UpdateAccountInformationPage;
 import org.keycloak.testsuite.util.OAuthClient;
 import org.keycloak.testsuite.util.WaitUtils;
@@ -53,6 +59,7 @@ import javax.ws.rs.core.UriBuilder;
 import java.net.URL;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -72,10 +79,16 @@ public abstract class AbstractClientInitiatedAccountLinkTest extends AbstractSer
     public static final String PARENT_USERNAME = "parent";
 
     @Page
-    protected UpdateAccountInformationPage profilePage;
+    protected LoginUpdateProfilePage loginUpdateProfilePage;
+
+    @Page
+    protected AccountUpdateProfilePage profilePage;
 
     @Page
     private LoginPage loginPage;
+
+    @Page
+    protected ErrorPage errorPage;
 
     public static class ClientApp extends AbstractPageWithInjectedUrl {
 
@@ -486,23 +499,11 @@ public abstract class AbstractClientInitiatedAccountLinkTest extends AbstractSer
 
             // ok, now scrape the code from page
             String pageSource = driver.getPageSource();
-            Pattern p = Pattern.compile("action=\"(.+)\"");
-            Matcher m = p.matcher(pageSource);
-            String action = null;
-            if (m.find()) {
-                action = m.group(1);
+            String action = ActionURIUtils.getActionURIFromPageSource(pageSource);
+            System.out.println("action uri: " + action);
 
-            }
-            System.out.println("action: " + action);
-
-            p = Pattern.compile("code=(.+)&");
-            m = p.matcher(action);
-            String code = null;
-            if (m.find()) {
-                code = m.group(1);
-
-            }
-            System.out.println("code: " + code);
+            Map<String, String> queryParams = ActionURIUtils.parseQueryParamsFromActionURI(action);
+            System.out.println("query params: " + queryParams);
 
             // now try and use the code to login to remote link-only idp
 
@@ -510,7 +511,8 @@ public abstract class AbstractClientInitiatedAccountLinkTest extends AbstractSer
 
             uri = UriBuilder.fromUri(AuthServerTestEnricher.getAuthServerContextRoot())
                     .path(uri)
-                    .queryParam("code", code)
+                    .queryParam(OAuth2Constants.CODE, queryParams.get(OAuth2Constants.CODE))
+                    .queryParam(Constants.CLIENT_ID, queryParams.get(Constants.CLIENT_ID))
                     .build().toString();
 
             System.out.println("hack uri: " + uri);
@@ -530,6 +532,92 @@ public abstract class AbstractClientInitiatedAccountLinkTest extends AbstractSer
         }
 
 
+    }
+
+
+    @Test
+    public void testAccountNotLinkedAutomatically() throws Exception {
+        RealmResource realm = adminClient.realms().realm(CHILD_IDP);
+        List<FederatedIdentityRepresentation> links = realm.users().get(childUserId).getFederatedIdentity();
+        Assert.assertTrue(links.isEmpty());
+
+        // Login to account mgmt first
+        profilePage.open(CHILD_IDP);
+        WaitUtils.waitForPageToLoad(driver);
+
+        Assert.assertTrue(loginPage.isCurrent(CHILD_IDP));
+        loginPage.login("child", "password");
+        profilePage.assertCurrent();
+
+        // Now in another tab, open login screen with "prompt=login" . Login screen will be displayed even if I have SSO cookie
+        UriBuilder linkBuilder = UriBuilder.fromUri(appPage.getInjectedUrl().toString())
+                .path("nosuch");
+        String linkUrl = linkBuilder.clone()
+                .queryParam(OIDCLoginProtocol.PROMPT_PARAM, OIDCLoginProtocol.PROMPT_VALUE_LOGIN)
+                .build().toString();
+
+        navigateTo(linkUrl);
+        Assert.assertTrue(loginPage.isCurrent(CHILD_IDP));
+        loginPage.clickSocial(PARENT_IDP);
+        Assert.assertTrue(loginPage.isCurrent(PARENT_IDP));
+        loginPage.login(PARENT_USERNAME, "password");
+
+        // Test I was not automatically linked.
+        links = realm.users().get(childUserId).getFederatedIdentity();
+        Assert.assertTrue(links.isEmpty());
+
+        loginUpdateProfilePage.assertCurrent();
+        loginUpdateProfilePage.update("Joe", "Doe", "joe@parent.com");
+
+        errorPage.assertCurrent();
+        Assert.assertEquals("You are already authenticated as different user 'child' in this session. Please logout first.", errorPage.getError());
+
+        logoutAll();
+
+        // Remove newly created user
+        String newUserId = ApiUtil.findUserByUsername(realm, "parent").getId();
+        getCleanup("child").addUserId(newUserId);
+    }
+
+
+    @Test
+    public void testAccountLinkingExpired() throws Exception {
+        RealmResource realm = adminClient.realms().realm(CHILD_IDP);
+        List<FederatedIdentityRepresentation> links = realm.users().get(childUserId).getFederatedIdentity();
+        Assert.assertTrue(links.isEmpty());
+
+        // Login to account mgmt first
+        profilePage.open(CHILD_IDP);
+        WaitUtils.waitForPageToLoad(driver);
+
+        Assert.assertTrue(loginPage.isCurrent(CHILD_IDP));
+        loginPage.login("child", "password");
+        profilePage.assertCurrent();
+
+        // Now in another tab, request account linking
+        UriBuilder linkBuilder = UriBuilder.fromUri(appPage.getInjectedUrl().toString())
+                .path("link");
+        String linkUrl = linkBuilder.clone()
+                .queryParam("realm", CHILD_IDP)
+                .queryParam("provider", PARENT_IDP).build().toString();
+        navigateTo(linkUrl);
+
+        Assert.assertTrue(loginPage.isCurrent(PARENT_IDP));
+
+        // Logout "child" userSession in the meantime (for example through admin request)
+        realm.logoutAll();
+
+        // Finish login on parent.
+        loginPage.login(PARENT_USERNAME, "password");
+
+        // Test I was not automatically linked
+        links = realm.users().get(childUserId).getFederatedIdentity();
+        Assert.assertTrue(links.isEmpty());
+
+        errorPage.assertCurrent();
+        Assert.assertEquals("Requested broker account linking, but current session is no longer valid.", errorPage.getError());
+
+        logoutAll();
     }
 
     private void navigateTo(String uri) {

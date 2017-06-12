@@ -18,6 +18,7 @@ package org.keycloak.services;
 
 import org.keycloak.OAuth2Constants;
 import org.keycloak.common.Version;
+import org.keycloak.models.Constants;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.OIDCLoginProtocolService;
 import org.keycloak.services.resources.AccountService;
@@ -73,12 +74,15 @@ public class Urls {
                 .build(realmName, providerId);
     }
 
-    public static URI identityProviderAuthnRequest(URI baseUri, String providerId, String realmName, String accessCode) {
+    public static URI identityProviderAuthnRequest(URI baseUri, String providerId, String realmName, String accessCode, String clientId) {
         UriBuilder uriBuilder = realmBase(baseUri).path(RealmsResource.class, "getBrokerService")
                 .path(IdentityBrokerService.class, "performLogin");
 
         if (accessCode != null) {
             uriBuilder.replaceQueryParam(OAuth2Constants.CODE, accessCode);
+        }
+        if (clientId != null) {
+            uriBuilder.replaceQueryParam(Constants.CLIENT_ID, clientId);
         }
 
         return uriBuilder.build(realmName, providerId);
@@ -99,20 +103,22 @@ public class Urls {
     }
 
     public static URI identityProviderAuthnRequest(URI baseURI, String providerId, String realmName) {
-        return identityProviderAuthnRequest(baseURI, providerId, realmName, null);
+        return identityProviderAuthnRequest(baseURI, providerId, realmName, null, null);
     }
 
-    public static URI identityProviderAfterFirstBrokerLogin(URI baseUri, String realmName, String accessCode) {
+    public static URI identityProviderAfterFirstBrokerLogin(URI baseUri, String realmName, String accessCode, String clientId) {
         return realmBase(baseUri).path(RealmsResource.class, "getBrokerService")
                 .path(IdentityBrokerService.class, "afterFirstBrokerLogin")
                 .replaceQueryParam(OAuth2Constants.CODE, accessCode)
+                .replaceQueryParam(Constants.CLIENT_ID, clientId)
                 .build(realmName);
     }
 
-    public static URI identityProviderAfterPostBrokerLogin(URI baseUri, String realmName, String accessCode) {
+    public static URI identityProviderAfterPostBrokerLogin(URI baseUri, String realmName, String accessCode, String clientId) {
         return realmBase(baseUri).path(RealmsResource.class, "getBrokerService")
                 .path(IdentityBrokerService.class, "afterPostBrokerLoginFlow")
                 .replaceQueryParam(OAuth2Constants.CODE, accessCode)
+                .replaceQueryParam(Constants.CLIENT_ID, clientId)
                 .build(realmName);
     }
 
@@ -178,8 +184,9 @@ public class Urls {
         return loginResetCredentialsBuilder(baseUri).build(realmName);
     }
 
-    public static UriBuilder executeActionsBuilder(URI baseUri) {
-        return loginActionsBase(baseUri).path(LoginActionsService.class, "executeActions");
+    public static UriBuilder actionTokenBuilder(URI baseUri, String tokenString) {
+        return loginActionsBase(baseUri).path(LoginActionsService.class, "executeActionToken")
+          .queryParam("key", tokenString);
     }
 
     public static UriBuilder loginResetCredentialsBuilder(URI baseUri) {
@@ -204,6 +211,11 @@ public class Urls {
 
     public static URI realmLoginPage(URI baseUri, String realmName) {
         return loginActionsBase(baseUri).path(LoginActionsService.class, "authenticate").build(realmName);
+    }
+
+    public static URI realmLoginRestartPage(URI baseUri, String realmId) {
+        return loginActionsBase(baseUri).path(LoginActionsService.class, "restartSession")
+                .build(realmId);
     }
 
     private static UriBuilder realmLogout(URI baseUri) {

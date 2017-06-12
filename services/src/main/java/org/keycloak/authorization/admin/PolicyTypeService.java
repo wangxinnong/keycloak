@@ -17,6 +17,8 @@
 package org.keycloak.authorization.admin;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Map;
 
 import javax.ws.rs.Path;
 
@@ -28,6 +30,7 @@ import org.keycloak.authorization.policy.provider.PolicyProviderAdminService;
 import org.keycloak.authorization.policy.provider.PolicyProviderFactory;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.representations.idm.authorization.AbstractPolicyRepresentation;
+import org.keycloak.services.resources.admin.AdminEventBuilder;
 import org.keycloak.services.resources.admin.RealmAuth;
 import org.keycloak.util.JsonSerialization;
 
@@ -38,8 +41,8 @@ public class PolicyTypeService extends PolicyService {
 
     private final String type;
 
-    PolicyTypeService(String type, ResourceServer resourceServer, AuthorizationProvider authorization, RealmAuth auth) {
-        super(resourceServer, authorization, auth);
+    PolicyTypeService(String type, ResourceServer resourceServer, AuthorizationProvider authorization, RealmAuth auth, AdminEventBuilder adminEvent) {
+        super(resourceServer, authorization, auth, adminEvent);
         this.type = type;
     }
 
@@ -58,7 +61,7 @@ public class PolicyTypeService extends PolicyService {
 
     @Override
     protected Object doCreatePolicyResource(Policy policy) {
-        return new PolicyTypeResourceService(policy, resourceServer,authorization, auth);
+        return new PolicyTypeResourceService(policy, resourceServer,authorization, auth, adminEvent);
     }
 
     @Override
@@ -87,5 +90,11 @@ public class PolicyTypeService extends PolicyService {
     protected AbstractPolicyRepresentation toRepresentation(Policy policy, AuthorizationProvider authorization) {
         PolicyProviderFactory providerFactory = authorization.getProviderFactory(policy.getType());
         return ModelToRepresentation.toRepresentation(policy, providerFactory.getRepresentationType(), authorization);
+    }
+
+    @Override
+    protected List<Object> doSearch(Integer firstResult, Integer maxResult, Map<String, String[]> filters) {
+        filters.put("type", new String[] {type});
+        return super.doSearch(firstResult, maxResult, filters);
     }
 }

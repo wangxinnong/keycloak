@@ -47,6 +47,7 @@ import org.keycloak.representations.idm.OAuthClientRepresentation;
 import org.keycloak.representations.idm.RealmEventsConfigRepresentation;
 import org.keycloak.representations.idm.RealmRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
+import org.keycloak.sessions.AuthenticationSessionProvider;
 import org.keycloak.storage.UserStorageProviderModel;
 import org.keycloak.services.clientregistration.policy.DefaultClientRegistrationPolicies;
 
@@ -225,8 +226,6 @@ public class RealmManager {
         realm.setLoginWithEmailAllowed(true);
 
         realm.setEventsListeners(Collections.singleton("jboss-logging"));
-
-        realm.setPasswordPolicy(PasswordPolicy.parse(session, "hashIterations(20000)"));
     }
 
     public boolean removeRealm(RealmModel realm) {
@@ -246,6 +245,11 @@ public class RealmManager {
             UserSessionPersisterProvider sessionsPersister = session.getProvider(UserSessionPersisterProvider.class);
             if (sessionsPersister != null) {
                 sessionsPersister.onRealmRemoved(realm);
+            }
+
+            AuthenticationSessionProvider authSessions = session.authenticationSessions();
+            if (authSessions != null) {
+                authSessions.onRealmRemoved(realm);
             }
 
           // Refresh periodic sync tasks for configured storageProviders

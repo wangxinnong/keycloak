@@ -35,11 +35,11 @@ import javax.ws.rs.POST;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
 
 import org.jboss.resteasy.spi.HttpRequest;
+import org.keycloak.OAuthErrorException;
 import org.keycloak.authorization.AuthorizationProvider;
-import org.keycloak.protocol.oidc.OIDCLoginProtocol;
-import org.keycloak.representations.idm.authorization.PolicyEvaluationRequest;
 import org.keycloak.authorization.admin.representation.PolicyEvaluationResponseBuilder;
 import org.keycloak.authorization.attribute.Attributes;
 import org.keycloak.authorization.common.KeycloakEvaluationContext;
@@ -54,19 +54,25 @@ import org.keycloak.authorization.policy.evaluation.Result;
 import org.keycloak.authorization.store.ScopeStore;
 import org.keycloak.authorization.store.StoreFactory;
 import org.keycloak.authorization.util.Permissions;
+import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
-import org.keycloak.models.ClientSessionModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
+import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.TokenManager;
 import org.keycloak.representations.AccessToken;
+import org.keycloak.representations.idm.authorization.PolicyEvaluationRequest;
 import org.keycloak.representations.idm.authorization.ResourceRepresentation;
 import org.keycloak.representations.idm.authorization.ScopeRepresentation;
+import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.Urls;
+import org.keycloak.services.managers.AuthenticationManager;
 import org.keycloak.services.resources.admin.RealmAuth;
+import org.keycloak.sessions.AuthenticationSessionModel;
 
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
@@ -115,16 +121,16 @@ public class PolicyEvaluationService {
         this.auth.requireView();
         CloseableKeycloakIdentity identity = createIdentity(evaluationRequest);
         try {
-            EvaluationContext evaluationContext = createEvaluationContext(evaluationRequest, identity);
-            Decision decisionCollector = new Decision();
-            authorization.evaluators().from(createPermissions(evaluationRequest, evaluationContext, authorization), evaluationContext).evaluate(decisionCollector);
-            if (decisionCollector.error != null) {
-                throw decisionCollector.error;
-            }
-            return Response.ok(PolicyEvaluationResponseBuilder.build(decisionCollector.results, resourceServer, authorization, identity)).build();
+            return Response.ok(PolicyEvaluationResponseBuilder.build(evaluate(evaluationRequest, createEvaluationContext(evaluationRequest, identity)), resourceServer, authorization, identity)).build();
+        } catch (Exception e) {
+            throw new ErrorResponseException(OAuthErrorException.SERVER_ERROR, "Error while evaluating permissions.", Status.INTERNAL_SERVER_ERROR);
         } finally {
             identity.close();
         }
+    }
+
+    private List<Result> evaluate(PolicyEvaluationRequest evaluationRequest, EvaluationContext evaluationContext) {
+        return authorization.evaluators().from(createPermissions(evaluationRequest, evaluationContext, authorization), evaluationContext).evaluate();
     }
 
     private EvaluationContext createEvaluationContext(PolicyEvaluationRequest representation, KeycloakIdentity identity) {
@@ -192,19 +198,13 @@ public class PolicyEvaluationService {
 
     private static class CloseableKeycloakIdentity extends KeycloakIdentity {
         private UserSessionModel userSession;
-        private ClientSessionModel clientSession;
 
-        public CloseableKeycloakIdentity(AccessToken accessToken, KeycloakSession keycloakSession, UserSessionModel userSession, ClientSessionModel clientSession) {
+        public CloseableKeycloakIdentity(AccessToken accessToken, KeycloakSession keycloakSession, UserSessionModel userSession) {
             super(accessToken, keycloakSession);
             this.userSession = userSession;
-            this.clientSession = clientSession;
         }
 
         public void close() {
-            if (clientSession != null) {
-                keycloakSession.sessions().removeClientSession(realm, clientSession);
-            }
-
             if (userSession != null) {
                 keycloakSession.sessions().removeUserSession(realm, userSession);
             }
@@ -220,7 +220,7 @@ public class PolicyEvaluationService {
 
         String subject = representation.getUserId();
 
-        ClientSessionModel clientSession = null;
+        AuthenticatedClientSessionModel clientSession = null;
         UserSessionModel userSession = null;
         if (subject != null) {
             UserModel userModel = keycloakSession.users().getUserById(subject, realm);
@@ -234,11 +234,15 @@ public class PolicyEvaluationService {
 
                 if (clientId != null) {
                     ClientModel clientModel = realm.getClientById(clientId);
-                    clientSession = keycloakSession.sessions().createClientSession(realm, clientModel);
-                    clientSession.setAuthMethod(OIDCLoginProtocol.LOGIN_PROTOCOL);
-                    userSession = keycloakSession.sessions().createUserSession(realm, userModel, userModel.getUsername(), "127.0.0.1", "passwd", false, null, null);
+                    String id = KeycloakModelUtils.generateId();
 
-                    new TokenManager().attachClientSession(userSession, clientSession);
+                    AuthenticationSessionModel authSession = keycloakSession.authenticationSessions().createAuthenticationSession(id, realm, clientModel);
+                    authSession.setProtocol(OIDCLoginProtocol.LOGIN_PROTOCOL);
+                    authSession.setAuthenticatedUser(userModel);
+                    userSession = keycloakSession.sessions().createUserSession(id, realm, userModel, userModel.getUsername(), "127.0.0.1", "passwd", false, null, null);
+
+                    AuthenticationManager.setRolesAndMappersInSession(authSession);
+                    clientSession = TokenManager.attachAuthenticationSession(keycloakSession, userSession, authSession);
 
                     Set<RoleModel> requestedRoles = new HashSet<>();
                     for (String roleId : clientSession.getRoles()) {
@@ -276,6 +280,6 @@ public class PolicyEvaluationService {
             representation.getRoleIds().forEach(roleName -> realmAccess.addRole(roleName));
         }
 
-        return new CloseableKeycloakIdentity(accessToken, keycloakSession, userSession, clientSession);
+        return new CloseableKeycloakIdentity(accessToken, keycloakSession, userSession);
     }
 }

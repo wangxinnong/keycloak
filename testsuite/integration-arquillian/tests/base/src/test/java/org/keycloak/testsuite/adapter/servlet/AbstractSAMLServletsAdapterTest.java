@@ -86,14 +86,13 @@ import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
 import javax.xml.validation.Validator;
 import java.io.ByteArrayInputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URL;
 import java.security.KeyPair;
 import java.security.PublicKey;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.Matchers.*;
@@ -107,7 +106,6 @@ import static org.keycloak.testsuite.util.IOUtil.loadXML;
 import static org.keycloak.testsuite.util.IOUtil.modifyDocElementAttribute;
 import static org.keycloak.testsuite.util.Matchers.bodyHC;
 import static org.keycloak.testsuite.util.Matchers.statusCodeIsHC;
-import static org.keycloak.testsuite.util.SamlClient.Binding.POST;
 import static org.keycloak.testsuite.util.SamlClient.idpInitiatedLogin;
 import static org.keycloak.testsuite.util.SamlClient.login;
 import static org.keycloak.testsuite.util.URLAssert.assertCurrentUrlStartsWith;
@@ -157,6 +155,9 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
     protected SalesPostEncServlet salesPostEncServletPage;
 
     @Page
+    protected SalesPostEncSignAssertionsOnlyServlet salesPostEncSignAssertionsOnlyServletPage;
+
+    @Page
     protected SalesPostPassiveServlet salesPostPassiveServletPage;
 
     @Page
@@ -196,6 +197,9 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
 
     @Page
     private SAMLIDPInitiatedLogin samlidpInitiatedLoginPage;
+
+    @Page
+    protected SalesPostAutodetectServlet salesPostAutodetectServletPage;
 
     public static final String FORBIDDEN_TEXT = "HTTP status code: 403";
 
@@ -259,6 +263,11 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
         return samlServletDeployment(SalesPostEncServlet.DEPLOYMENT_NAME, SendUsernameServlet.class);
     }
 
+    @Deployment(name = SalesPostEncSignAssertionsOnlyServlet.DEPLOYMENT_NAME)
+    protected static WebArchive salesPostEncSignAssertionsOnly() {
+        return samlServletDeployment(SalesPostEncSignAssertionsOnlyServlet.DEPLOYMENT_NAME, SendUsernameServlet.class);
+    }
+
     @Deployment(name = SalesPostPassiveServlet.DEPLOYMENT_NAME)
     protected static WebArchive salesPostPassive() {
         return samlServletDeployment(SalesPostPassiveServlet.DEPLOYMENT_NAME, SendUsernameServlet.class);
@@ -317,6 +326,11 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
     @Deployment(name = EmployeeServlet.DEPLOYMENT_NAME)
     protected static WebArchive employeeServlet() {
         return samlServletDeployment(EmployeeServlet.DEPLOYMENT_NAME, "employee/WEB-INF/web.xml", SamlSPFacade.class, ServletTestUtils.class);
+    }
+
+    @Deployment(name = SalesPostAutodetectServlet.DEPLOYMENT_NAME)
+    protected static WebArchive salesPostAutodetect() {
+        return samlServletDeployment(SalesPostAutodetectServlet.DEPLOYMENT_NAME, SendUsernameServlet.class);
     }
 
     @Override
@@ -623,6 +637,24 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
     @Test
     public void salesPostEncTest() {
         testSuccessfulAndUnauthorizedLogin(salesPostEncServletPage, testRealmSAMLPostLoginPage);
+    }
+
+    @Test
+    public void salesPostEncSignedAssertionsOnlyTest() throws Exception {
+        testSuccessfulAndUnauthorizedLogin(salesPostEncSignAssertionsOnlyServletPage, testRealmSAMLPostLoginPage);
+    }
+
+    @Test
+    public void salesPostEncSignedAssertionsAndDocumentTest() throws Exception {
+        ClientRepresentation salesPostEncClient = testRealmResource().clients().findByClientId(SalesPostEncServlet.CLIENT_NAME).get(0);
+        try (Closeable client = new ClientAttributeUpdater(testRealmResource().clients().get(salesPostEncClient.getId()))
+          .setAttribute(SamlConfigAttributes.SAML_ASSERTION_SIGNATURE, "true")
+          .setAttribute(SamlConfigAttributes.SAML_SERVER_SIGNATURE, "true")
+          .update()) {
+            testSuccessfulAndUnauthorizedLogin(salesPostEncServletPage, testRealmSAMLPostLoginPage);
+        } finally {
+            salesPostEncServletPage.logout();
+        }
     }
 
     @Test
@@ -1089,6 +1121,54 @@ public abstract class AbstractSAMLServletsAdapterTest extends AbstractServletsAd
 
         salesPost2ServletPage.logout();
         checkLoggedOut(differentCookieNameServletPage, testRealmSAMLPostLoginPage);
+    }
+
+    @Test
+    /* KEYCLOAK-4980 */
+    public void testAutodetectBearerOnly() throws Exception {
+        Client client = ClientBuilder.newClient();
+
+        // Do not redirect client to login page if it's an XHR
+        WebTarget target = client.target(salesPostAutodetectServletPage.toString());
+        Response response = target.request().header("X-Requested-With", "XMLHttpRequest").get();
+        Assert.assertEquals(401, response.getStatus());
+        response.close();
+
+        // Do not redirect client to login page if it's a partial Faces request
+        response = target.request().header("Faces-Request", "partial/ajax").get();
+        Assert.assertEquals(401, response.getStatus());
+        response.close();
+
+        // Do not redirect client to login page if it's a SOAP request
+        response = target.request().header("SOAPAction", "").get();
+        Assert.assertEquals(401, response.getStatus());
+        response.close();
+
+        // Do not redirect client to login page if Accept header is missing
+        response = target.request().get();
+        Assert.assertEquals(401, response.getStatus());
+        response.close();
+
+        // Do not redirect client to login page if client does not understand HTML reponses
+        response = target.request().header(HttpHeaders.ACCEPT, "application/json,text/xml").get();
+        Assert.assertEquals(401, response.getStatus());
+        response.close();
+
+        // Redirect client to login page if it's not an XHR
+        response = target.request().header("X-Requested-With", "Dont-Know").header(HttpHeaders.ACCEPT, "*/*").get();
+        Assert.assertEquals(200, response.getStatus());
+        response.close();
+
+        // Redirect client to login page if client explicitely understands HTML responses
+        response = target.request().header(HttpHeaders.ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9").get();
+        Assert.assertEquals(200, response.getStatus());
+        response.close();
+
+        // Redirect client to login page if client understands all response types
+        response = target.request().header(HttpHeaders.ACCEPT, "*/*").get();
+        Assert.assertEquals(200, response.getStatus());
+        response.close();
+        client.close();
     }
 
     private URI getAuthServerSamlEndpoint(String realm) throws IllegalArgumentException, UriBuilderException {

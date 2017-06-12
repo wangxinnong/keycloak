@@ -25,8 +25,8 @@ import org.keycloak.common.Profile;
 import org.keycloak.common.util.Time;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
+import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
-import org.keycloak.models.ClientSessionModel;
 import org.keycloak.models.Constants;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelDuplicateException;
@@ -148,33 +148,10 @@ public class ClientResource {
         try {
             updateClientFromRep(rep, client, session);
             adminEvent.operation(OperationType.UPDATE).resourcePath(uriInfo).representation(rep).success();
+            updateAuthorizationSettings(rep);
             return Response.noContent().build();
         } catch (ModelDuplicateException e) {
             return ErrorResponse.exists("Client " + rep.getClientId() + " already exists");
-        }
-    }
-
-    public void updateClientFromRep(ClientRepresentation rep, ClientModel client, KeycloakSession session) throws ModelDuplicateException {
-        if (TRUE.equals(rep.isServiceAccountsEnabled())) {
-            UserModel serviceAccount = this.session.users().getServiceAccount(client);
-
-            if (serviceAccount == null) {
-                new ClientManager(new RealmManager(session)).enableServiceAccount(client);
-            }
-        }
-
-        if (!rep.getClientId().equals(client.getClientId())) {
-            new ClientManager(new RealmManager(session)).clientIdChanged(client, rep.getClientId());
-        }
-
-        RepresentationToModel.updateClient(rep, client);
-
-        if (Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION)) {
-            if (TRUE.equals(rep.getAuthorizationServicesEnabled())) {
-                authorization().enable();
-            } else {
-                authorization().disable();
-            }
         }
     }
 
@@ -492,8 +469,11 @@ public class ClientResource {
             UserSessionRepresentation rep = ModelToRepresentation.toRepresentation(userSession);
 
             // Update lastSessionRefresh with the timestamp from clientSession
-            for (ClientSessionModel clientSession : userSession.getClientSessions()) {
-                if (client.getId().equals(clientSession.getClient().getId())) {
+            for (Map.Entry<String, AuthenticatedClientSessionModel> csEntry : userSession.getAuthenticatedClientSessions().entrySet()) {
+                String clientUuid = csEntry.getKey();
+                AuthenticatedClientSessionModel clientSession = csEntry.getValue();
+
+                if (client.getId().equals(clientUuid)) {
                     rep.setLastAccess(Time.toMillis(clientSession.getTimestamp()));
                     break;
                 }
@@ -584,10 +564,36 @@ public class ClientResource {
     public AuthorizationService authorization() {
         ProfileHelper.requireFeature(Profile.Feature.AUTHORIZATION);
 
-        AuthorizationService resource = new AuthorizationService(this.session, this.client, this.auth);
+        AuthorizationService resource = new AuthorizationService(this.session, this.client, this.auth, adminEvent);
 
         ResteasyProviderFactory.getInstance().injectProperties(resource);
 
         return resource;
+    }
+
+    private void updateClientFromRep(ClientRepresentation rep, ClientModel client, KeycloakSession session) throws ModelDuplicateException {
+        if (TRUE.equals(rep.isServiceAccountsEnabled())) {
+            UserModel serviceAccount = this.session.users().getServiceAccount(client);
+
+            if (serviceAccount == null) {
+                new ClientManager(new RealmManager(session)).enableServiceAccount(client);
+            }
+        }
+
+        if (!rep.getClientId().equals(client.getClientId())) {
+            new ClientManager(new RealmManager(session)).clientIdChanged(client, rep.getClientId());
+        }
+
+        RepresentationToModel.updateClient(rep, client);
+    }
+
+    private void updateAuthorizationSettings(ClientRepresentation rep) {
+        if (Profile.isFeatureEnabled(Profile.Feature.AUTHORIZATION)) {
+            if (TRUE.equals(rep.getAuthorizationServicesEnabled())) {
+                authorization().enable(false);
+            } else {
+                authorization().disable();
+            }
+        }
     }
 }

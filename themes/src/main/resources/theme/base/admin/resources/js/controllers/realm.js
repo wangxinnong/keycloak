@@ -1044,6 +1044,8 @@ module.controller('RealmTokenDetailCtrl', function($scope, Realm, realm, $http, 
     $scope.realm.accessCodeLifespan = TimeUnit2.asUnit(realm.accessCodeLifespan);
     $scope.realm.accessCodeLifespanLogin = TimeUnit2.asUnit(realm.accessCodeLifespanLogin);
     $scope.realm.accessCodeLifespanUserAction = TimeUnit2.asUnit(realm.accessCodeLifespanUserAction);
+    $scope.realm.actionTokenGeneratedByAdminLifespan = TimeUnit2.asUnit(realm.actionTokenGeneratedByAdminLifespan);
+    $scope.realm.actionTokenGeneratedByUserLifespan = TimeUnit2.asUnit(realm.actionTokenGeneratedByUserLifespan);
 
     var oldCopy = angular.copy($scope.realm);
     $scope.changed = false;
@@ -1063,6 +1065,8 @@ module.controller('RealmTokenDetailCtrl', function($scope, Realm, realm, $http, 
         $scope.realm.accessCodeLifespan = $scope.realm.accessCodeLifespan.toSeconds();
         $scope.realm.accessCodeLifespanUserAction = $scope.realm.accessCodeLifespanUserAction.toSeconds();
         $scope.realm.accessCodeLifespanLogin = $scope.realm.accessCodeLifespanLogin.toSeconds();
+        $scope.realm.actionTokenGeneratedByAdminLifespan = $scope.realm.actionTokenGeneratedByAdminLifespan.toSeconds();
+        $scope.realm.actionTokenGeneratedByUserLifespan = $scope.realm.actionTokenGeneratedByUserLifespan.toSeconds();
 
         Realm.update($scope.realm, function () {
             $route.reload();
@@ -2692,4 +2696,41 @@ module.controller('RealmImportCtrl', function($scope, realm, $route,
         $route.reload();
     }
 
+});
+
+module.controller('RealmExportCtrl', function($scope, realm, $http,
+                                              $httpParamSerializer, Notifications, Dialog) {
+    $scope.realm = realm;
+    $scope.exportGroupsAndRoles = false;
+    $scope.exportClients = false;
+
+    $scope.export = function() {
+        if ($scope.exportGroupsAndRoles || $scope.exportClients) {
+            Dialog.confirm('Export', 'This operation may make server unresponsive for a while.\n\nAre you sure you want to proceed?', download);
+        } else {
+            download();
+        }
+    }
+
+    function download() {
+        var exportUrl = authUrl + '/admin/realms/' + realm.realm + '/partial-export';
+        var params = {};
+        if ($scope.exportGroupsAndRoles) {
+            params['exportGroupsAndRoles'] = true;
+        }
+        if ($scope.exportClients) {
+            params['exportClients'] = true;
+        }
+        if (Object.keys(params).length > 0) {
+            exportUrl += '?' + $httpParamSerializer(params);
+        }
+        $http.post(exportUrl)
+            .success(function(data, status, headers) {
+                var download = angular.fromJson(data);
+                download = angular.toJson(download, true);
+                saveAs(new Blob([download], { type: 'application/json' }), 'realm-export.json');
+            }).error(function() {
+                Notifications.error("Sorry, something went wrong.");
+            });
+    }
 });

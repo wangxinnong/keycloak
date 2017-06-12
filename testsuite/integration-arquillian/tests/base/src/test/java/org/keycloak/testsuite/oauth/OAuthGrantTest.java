@@ -16,8 +16,8 @@
  */
 package org.keycloak.testsuite.oauth;
 
+import org.hamcrest.Matchers;
 import org.jboss.arquillian.graphene.page.Page;
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
@@ -42,6 +42,7 @@ import org.keycloak.testsuite.account.AccountTest;
 import org.keycloak.testsuite.admin.ApiUtil;
 import org.keycloak.testsuite.pages.AccountApplicationsPage;
 import org.keycloak.testsuite.pages.AppPage;
+import org.keycloak.testsuite.pages.ErrorPage;
 import org.keycloak.testsuite.pages.OAuthGrantPage;
 import org.keycloak.testsuite.util.ClientManager;
 import org.keycloak.testsuite.util.OAuthClient;
@@ -76,6 +77,9 @@ public class OAuthGrantTest extends AbstractKeycloakTest {
     protected AccountApplicationsPage accountAppsPage;
     @Page
     protected AppPage appPage;
+
+    @Page
+    protected ErrorPage errorPage;
 
     @Override
     public void addTestRealms(List<RealmRepresentation> testRealms) {
@@ -155,6 +159,7 @@ public class OAuthGrantTest extends AbstractKeycloakTest {
                 .client(THIRD_PARTY_APP)
                 .error("rejected_by_user")
                 .removeDetail(Details.CONSENT)
+                .session(Matchers.nullValue(String.class))
                 .assertEvent();
     }
 
@@ -309,6 +314,7 @@ public class OAuthGrantTest extends AbstractKeycloakTest {
                 .client(THIRD_PARTY_APP)
                 .error("rejected_by_user")
                 .removeDetail(Details.CONSENT)
+                .session(Matchers.nullValue(String.class))
                 .assertEvent();
 
         oauth.scope("foo-role third-party/bar-role");
@@ -401,6 +407,25 @@ public class OAuthGrantTest extends AbstractKeycloakTest {
                 .client("account").detail(Details.REVOKED_CLIENT, THIRD_PARTY_APP).assertEvent();
 
 
+    }
+
+    @Test
+    public void oauthGrantExpiredAuthSession() throws Exception {
+        oauth.clientId(THIRD_PARTY_APP);
+        oauth.doLoginGrant("test-user@localhost", "password");
+
+        grantPage.assertCurrent();
+
+        // Expire cookies
+        driver.manage().deleteAllCookies();
+
+        grantPage.accept();
+
+        // Assert link "back to application" present
+        errorPage.assertCurrent();
+        String backToAppLink = errorPage.getBackToApplicationLink();
+        ClientRepresentation thirdParty = findClientByClientId(adminClient.realm(REALM_NAME), THIRD_PARTY_APP).toRepresentation();
+        Assert.assertEquals(backToAppLink, thirdParty.getBaseUrl());
     }
 
 }
